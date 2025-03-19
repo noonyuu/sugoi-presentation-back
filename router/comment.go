@@ -238,7 +238,7 @@ var chatPageHTML = `
         function connectWebSocket() {
           // 現在のURLからWebSocketのURLを生成（httpをwsに変換）
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const wsUrl = ` + "`${protocol}//${window.location.host}/ws`" + `;
+          const wsUrl = ` + "`${protocol}//${window.location.host}/app/ws`" + `;
           
           socket = new WebSocket(wsUrl);
           
@@ -291,7 +291,7 @@ var chatPageHTML = `
           }
           
           try {
-            const response = await fetch('/comment', {
+            const response = await fetch('/app/comment', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',

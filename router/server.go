@@ -5,9 +5,10 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/noonyuu/websocket-server/db"
 )
 
-func Server() {
+func Server(database *db.Database) {
 	mainRouter := mux.NewRouter()
 
 	// 疎通確認用
