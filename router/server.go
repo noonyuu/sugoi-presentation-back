@@ -19,7 +19,7 @@ func Server(database *db.Database) {
 
 	mainRouter.HandleFunc("/ws", handleWebSocket)
 	mainRouter.HandleFunc("/comment-form/{sessionId}", commentFormHandler).Methods("GET")
-	mainRouter.HandleFunc("/comment", commentHandler).Methods("POST")
+	mainRouter.HandleFunc("/comment", NewCommentHandler(database).commentHandler).Methods("POST")
 
 	go func() {
 		log.Println("Server is running on port 8080")

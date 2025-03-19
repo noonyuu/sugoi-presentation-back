@@ -7,13 +7,23 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"github.com/noonyuu/websocket-server/db"
 )
 
 type PageData struct {
 	SessionID string
 }
 
-func commentHandler(w http.ResponseWriter, r *http.Request) {
+type CommentHandler struct {
+	DB *db.Database
+}
+
+func NewCommentHandler(database *db.Database) *CommentHandler {
+	handler := &CommentHandler{DB: database}
+	return handler
+}
+
+func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) {
 	var data struct {
 		Comment   string `json:"comment"`
 		SessionID string `json:"sessionId"`
@@ -37,6 +47,27 @@ func commentHandler(w http.ResponseWriter, r *http.Request) {
 
 	// コメントの処理（ここではログに出力）
 	fmt.Printf("セッションID: %s, コメント: %s\n", data.SessionID, data.Comment)
+
+	var comment db.Comment
+	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+		http.Error(w, "リクエストの解析エラー", http.StatusBadRequest)
+		return
+	}
+	// コメントのバリデーション
+	if comment.Comment == "" {
+		http.Error(w, "コメントを入力してください", http.StatusBadRequest)
+		return
+	}
+
+	if len(comment.Comment) > 20 {
+		http.Error(w, "コメントは20字以内で入力してください", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.DB.InsertComment(&comment); err != nil {
+		http.Error(w, "コメントの保存に失敗しました", http.StatusInternalServerError)
+		return
+	}
 
 	// レスポンスの返却
 	w.Header().Set("Content-Type", "application/json")
@@ -63,268 +94,269 @@ func commentFormHandler(w http.ResponseWriter, r *http.Request) {
 var chatPageHTML = `
     <!DOCTYPE html>
     <html lang="ja">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>コメント入力</title>
-      <style>
-        :root {
-          --primary-color: #4361ee;
-          --text-color: #333333;
-          --border-color: #e0e0e0;
-          --success-color: #38b000;
-          --error-color: #e63946;
-          --bg-color: #f9f9f9;
-        }
-        
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-          font-family: 'Helvetica Neue', Arial, sans-serif;
-        }
-        
-        body {
-          background-color: var(--bg-color);
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 100vh;
-          padding: 20px;
-        }
-        
-        .comment-container {
-          width: 100%;
-          max-width: 500px;
-          background-color: white;
-          border-radius: 12px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-          padding: 24px;
-        }
-        
-        .comment-title {
-          font-size: 18px;
-          font-weight: 600;
-          color: var(--text-color);
-          margin-bottom: 16px;
-          text-align: center;
-        }
-        
-        .connection-status {
-          text-align: center;
-          font-size: 14px;
-          padding: 6px;
-          margin-bottom: 16px;
-          border-radius: 4px;
-          background-color: #f8f9fa;
-        }
-        
-        .status-connected {
-          color: var(--success-color);
-        }
-        
-        .status-disconnected {
-          color: var(--error-color);
-        }
-        
-        .comment-form {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-        
-        .comment-input {
-          width: 100%;
-          min-height: 120px;
-          padding: 16px;
-          border: 1px solid var(--border-color);
-          border-radius: 8px;
-          font-size: 16px;
-          resize: none;
-          transition: border-color 0.3s, box-shadow 0.3s;
-        }
-        
-        .comment-input:focus {
-          outline: none;
-          border-color: var(--primary-color);
-          box-shadow: 0 0 0 2px rgba(67, 97, 238, 0.2);
-        }
-        
-        .submit-button {
-          background-color: var(--primary-color);
-          color: white;
-          border: none;
-          border-radius: 8px;
-          padding: 14px;
-          font-size: 16px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: background-color 0.2s, transform 0.1s;
-          display: block;
-          width: 100%;
-        }
-        
-        .submit-button:hover {
-          background-color: #3651d1;
-        }
-        
-        .submit-button:active {
-          transform: translateY(1px);
-        }
-        
-        .status-message {
-          height: 20px;
-          font-size: 14px;
-          text-align: center;
-          margin-top: 12px;
-          transition: opacity 0.3s;
-        }
-        
-        .status-success {
-          color: var(--success-color);
-        }
-        
-        .status-error {
-          color: var(--error-color);
-        }
+			<head>
+				<meta charset="UTF-8">
+				<meta name="viewport" content="width=device-width, initial-scale=1.0">
+				<title>コメント入力</title>
+				<style>
+					:root {
+						--primary-color: #4361ee;
+						--text-color: #333333;
+						--border-color: #e0e0e0;
+						--success-color: #38b000;
+						--error-color: #e63946;
+						--bg-color: #f9f9f9;
+					}
+					
+					* {
+						margin: 0;
+						padding: 0;
+						box-sizing: border-box;
+						font-family: 'Helvetica Neue', Arial, sans-serif;
+					}
+					
+					body {
+						background-color: var(--bg-color);
+						display: flex;
+						justify-content: center;
+						align-items: center;
+						min-height: 100vh;
+						padding: 20px;
+					}
+					
+					.comment-container {
+						width: 100%;
+						max-width: 500px;
+						background-color: white;
+						border-radius: 12px;
+						box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+						padding: 24px;
+					}
+					
+					.comment-title {
+						font-size: 18px;
+						font-weight: 600;
+						color: var(--text-color);
+						margin-bottom: 16px;
+						text-align: center;
+					}
+					
+					.connection-status {
+						text-align: center;
+						font-size: 14px;
+						padding: 6px;
+						margin-bottom: 16px;
+						border-radius: 4px;
+						background-color: #f8f9fa;
+					}
+					
+					.status-connected {
+						color: var(--success-color);
+					}
+					
+					.status-disconnected {
+						color: var(--error-color);
+					}
+					
+					.comment-form {
+						display: flex;
+						flex-direction: column;
+						gap: 16px;
+					}
+					
+					.comment-input {
+						width: 100%;
+						min-height: 120px;
+						padding: 16px;
+						border: 1px solid var(--border-color);
+						border-radius: 8px;
+						font-size: 16px;
+						resize: none;
+						transition: border-color 0.3s, box-shadow 0.3s;
+					}
+					
+					.comment-input:focus {
+						outline: none;
+						border-color: var(--primary-color);
+						box-shadow: 0 0 0 2px rgba(67, 97, 238, 0.2);
+					}
+					
+					.submit-button {
+						background-color: var(--primary-color);
+						color: white;
+						border: none;
+						border-radius: 8px;
+						padding: 14px;
+						font-size: 16px;
+						font-weight: 500;
+						cursor: pointer;
+						transition: background-color 0.2s, transform 0.1s;
+						display: block;
+						width: 100%;
+					}
+					
+					.submit-button:hover {
+						background-color: #3651d1;
+					}
+					
+					.submit-button:active {
+						transform: translateY(1px);
+					}
+					
+					.status-message {
+						height: 20px;
+						font-size: 14px;
+						text-align: center;
+						margin-top: 12px;
+						transition: opacity 0.3s;
+					}
+					
+					.status-success {
+						color: var(--success-color);
+					}
+					
+					.status-error {
+						color: var(--error-color);
+					}
 
-        .char-counter {
-          font-size: 14px;
-          text-align: right;
-          color: var(--text-color);
-        }
+					.char-counter {
+						font-size: 14px;
+						text-align: right;
+						color: var(--text-color);
+					}
 
-        .char-counter.error {
-          color: var(--error-color);
-        }
-      </style>
-    </head>
-    <body>
-      <div class="comment-container">
-        <div class="comment-title">コメントを入力してください</div>
-        <div class="connection-status" id="connectionStatus">接続中...</div>
-        <form class="comment-form" id="commentForm">
-          <textarea class="comment-input" placeholder="コメントを入力..." id="commentInput"></textarea>
-          <div class="char-counter" id="charCounter">0 / 20</div>
-          <button type="submit" class="submit-button" id="submitButton">送信</button>
-        </form>
-        <div class="status-message" id="statusMessage"></div>
-      </div>
+					.char-counter.error {
+						color: var(--error-color);
+					}
+				</style>
+			</head>
+			<body>
+				<div class="comment-container">
+					<div class="comment-title">コメントを入力してください</div>
+					<div class="connection-status" id="connectionStatus">接続中...</div>
+					<form class="comment-form" id="commentForm">
+						<textarea class="comment-input" placeholder="コメントを入力..." id="commentInput"></textarea>
+						<div class="char-counter" id="charCounter">0 / 20</div>
+						<button type="submit" class="submit-button" id="submitButton">送信</button>
+					</form>
+					<div class="status-message" id="statusMessage"></div>
+				</div>
 
-      <script>
-        // WebSocket接続
-        let socket;
-        const statusMessage = document.getElementById('statusMessage');
-        const connectionStatus = document.getElementById('connectionStatus');
-        const commentForm = document.getElementById('commentForm');
-        const commentInput = document.getElementById('commentInput');
-        const submitButton = document.getElementById('submitButton');
-        const sessionId = '{{.SessionID}}';
+				<script>
+					// WebSocket接続
+					let socket;
+					const statusMessage = document.getElementById('statusMessage');
+					const connectionStatus = document.getElementById('connectionStatus');
+					const commentForm = document.getElementById('commentForm');
+					const commentInput = document.getElementById('commentInput');
+					const submitButton = document.getElementById('submitButton');
+					const sessionId = '{{.SessionID}}';
 
-        // カウンター
-        const charCounter = document.getElementById("charCounter");
+					// カウンター
+					const charCounter = document.getElementById("charCounter");
 
-        commentInput.addEventListener("input", () => {
-          const length = commentInput.value.length;
-          charCounter.textContent = ` + "`${length} / 20`" + `;
-          if (length > 20) {
-            charCounter.classList.add("error");
-          } else {
-            charCounter.classList.remove("error");
-          }
-        });
+					commentInput.addEventListener("input", () => {
+						const length = commentInput.value.length;
+						charCounter.textContent = ` + "`${length} / 20`" + `;
+						if (length > 20) {
+							charCounter.classList.add("error");
+						} else {
+							charCounter.classList.remove("error");
+						}
+					});
 
-        // WebSocketの接続関数
-        function connectWebSocket() {
-          // 現在のURLからWebSocketのURLを生成（httpをwsに変換）
-          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const wsUrl = ` + "`${protocol}//${window.location.host}/app/ws`" + `;
-          
-          socket = new WebSocket(wsUrl);
-          
-          socket.onopen = function() {
-            connectionStatus.textContent = '接続しました';
-            connectionStatus.classList.add('status-connected');
-            connectionStatus.classList.remove('status-disconnected');
-            submitButton.disabled = false;
-          };
-          
-          socket.onclose = function() {
-            connectionStatus.textContent = '接続が切断されました。再接続中...';
-            connectionStatus.classList.add('status-disconnected');
-            connectionStatus.classList.remove('status-connected');
-            submitButton.disabled = true;
-            
-            // 再接続を試みる
-            setTimeout(connectWebSocket, 3000);
-          };
-          
-          socket.onerror = function() {
-            connectionStatus.textContent = '接続エラーが発生しました';
-            connectionStatus.classList.add('status-disconnected');
-            submitButton.disabled = true;
-          };
-          
-          socket.onmessage = function(event) {
-            // メッセージ受信時の処理（必要に応じて）
-            console.log('受信したメッセージ:', event.data);
-          };
-        }
-        
-        // WebSocketに接続
-        connectWebSocket();
-        
-        // コメント送信処理
-        commentForm.addEventListener('submit', async function(e) {
-          e.preventDefault();
-          const comment = commentInput.value.trim();      
+					// WebSocketの接続関数
+					function connectWebSocket() {
+						// 現在のURLからWebSocketのURLを生成（httpをwsに変換）
+						const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+						const wsUrl = ` + "`${protocol}//${window.location.host}/app/ws`" + `;
+						
+						socket = new WebSocket(wsUrl);
+						
+						socket.onopen = function() {
+							connectionStatus.textContent = '接続しました';
+							connectionStatus.classList.add('status-connected');
+							connectionStatus.classList.remove('status-disconnected');
+							submitButton.disabled = false;
+						};
+						
+						socket.onclose = function() {
+							connectionStatus.textContent = '接続が切断されました。再接続中...';
+							connectionStatus.classList.add('status-disconnected');
+							connectionStatus.classList.remove('status-connected');
+							submitButton.disabled = true;
+							
+							// 再接続を試みる
+							setTimeout(connectWebSocket, 3000);
+						};
+						
+						socket.onerror = function() {
+							connectionStatus.textContent = '接続エラーが発生しました';
+							connectionStatus.classList.add('status-disconnected');
+							submitButton.disabled = true;
+						};
+						
+						socket.onmessage = function(event) {
+							// メッセージ受信時の処理（必要に応じて）
+							console.log('受信したメッセージ:', event.data);
+						};
+					}
+					
+					// WebSocketに接続
+					connectWebSocket();
+					console.log('コメント送信処理前');
+					// コメント送信処理
+					commentForm.addEventListener('submit', async function(e) {
+						console.log('コメント送信処理');
+						e.preventDefault();
+						const comment = commentInput.value.trim();      
 
-          if (!comment) {
-            showStatusMessage('コメントを入力してください', 'error');
-            return;
-          }
+						if (!comment) {
+							showStatusMessage('コメントを入力してください', 'error');
+							return;
+						}
 
-          if (comment.length > 20) {
-            statusMessage.textContent = "コメントは20字以内で入力してください";
-            statusMessage.className = "status-message status-visible status-error";
-            return;
-          }
-          
-          try {
-            const response = await fetch('/app/comment', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ comment, sessionId : ` + "`${sessionId}`" + ` }),
-            });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-              showStatusMessage('コメントを送信しました', 'success');
-              commentInput.value = '';
-            } else {
-              showStatusMessage(data.message || 'エラーが発生しました', 'error');
-            }
-          } catch (error) {
-            console.error('エラー:', error);
-            showStatusMessage('通信エラーが発生しました', 'error');
-          }
-        });
-        
-        // ステータスメッセージの表示処理
-        function showStatusMessage(message, type) {
-          statusMessage.textContent = message;
-          statusMessage.className = 'status-message';
-          statusMessage.classList.add(` + "`status-${type}`" + `);
-          
-          // 3秒後にメッセージをクリア
-          setTimeout(() => {
-            statusMessage.textContent = '';
-          }, 3000);
-        }
-      </script>
-    </body>
+						if (comment.length > 20) {
+							statusMessage.textContent = "コメントは20字以内で入力してください";
+							statusMessage.className = "status-message status-visible status-error";
+							return;
+						}
+						
+						try {
+							const response = await fetch('/app/comment', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+								},
+								body: JSON.stringify({ comment, sessionId : ` + "`${sessionId}`" + ` }),
+							});
+							
+							const data = await response.json();
+							
+							if (data.success) {
+								showStatusMessage('コメントを送信しました', 'success');
+								commentInput.value = '';
+							} else {
+								showStatusMessage(data.message || 'エラーが発生しました', 'error');
+							}
+						} catch (error) {
+							console.error('エラー:', error);
+							showStatusMessage('通信エラーが発生しました', 'error');
+						}
+					});
+					
+					// ステータスメッセージの表示処理
+					function showStatusMessage(message, type) {
+						statusMessage.textContent = message;
+						statusMessage.className = 'status-message';
+						statusMessage.classList.add(` + "`status-${type}`" + `);
+						
+						// 3秒後にメッセージをクリア
+						setTimeout(() => {
+							statusMessage.textContent = '';
+						}, 3000);
+					}
+				</script>
+			</body>
     </html>
   `
