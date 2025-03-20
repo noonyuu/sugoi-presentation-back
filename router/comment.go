@@ -26,9 +26,10 @@ func NewCommentHandler(database *db.Database) *CommentHandler {
 func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) {
 	var data struct {
 		Comment   string `json:"comment"`
-		SessionID string `json:"sessionId"`
+		SessionId string `json:"sessionId"`
 	}
 
+	// リクエストボディのデコード
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		http.Error(w, "リクエストの解析エラー", http.StatusBadRequest)
 		return
@@ -39,40 +40,29 @@ func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "コメントを入力してください", http.StatusBadRequest)
 		return
 	}
-
 	if len(data.Comment) > 20 {
 		http.Error(w, "コメントは20字以内で入力してください", http.StatusBadRequest)
 		return
 	}
 
-	// コメントの処理（ここではログに出力）
-	fmt.Printf("セッションID: %s, コメント: %s\n", data.SessionID, data.Comment)
-
-	var comment db.Comment
-	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
-		http.Error(w, "リクエストの解析エラー", http.StatusBadRequest)
-		return
-	}
-	// コメントのバリデーション
-	if comment.Comment == "" {
-		http.Error(w, "コメントを入力してください", http.StatusBadRequest)
-		return
+	comment := db.Comment{
+		Comment:   data.Comment,
+		SessionId: data.SessionId,
 	}
 
-	if len(comment.Comment) > 20 {
-		http.Error(w, "コメントは20字以内で入力してください", http.StatusBadRequest)
-		return
-	}
-
+	// データベースへコメントを保存
 	if err := h.DB.InsertComment(&comment); err != nil {
 		http.Error(w, "コメントの保存に失敗しました", http.StatusInternalServerError)
 		return
 	}
 
-	// レスポンスの返却
+	// ログ出力（デバッグ用）
+	fmt.Printf("セッションID: %s, コメント: %s\n", comment.SessionId, comment.Comment)
+
+	// 成功レスポンスを返す
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	NotifyPost(data.Comment)
+	NotifyPost(comment.Comment)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "コメントを受け付けました",
