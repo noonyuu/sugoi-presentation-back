@@ -5,15 +5,16 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 var (
 	// WebSocketの接続を管理するマップとミューテックス
-	activeConnections = make(map[*websocket.Conn]bool)
-	connMutex         = sync.Mutex{}
-	upgrader          = websocket.Upgrader{
+	activeSessions = make(map[string]map[*websocket.Conn]bool)
+	connMutex      = sync.Mutex{}
+	upgrader       = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true // 同一オリジンのチェックを無効化（必要に応じて強化）
 		},
@@ -21,80 +22,78 @@ var (
 )
 
 // WebSocket接続を登録
-func addConnection(conn *websocket.Conn) {
+func addConnection(sessionId string, conn *websocket.Conn) {
 	connMutex.Lock()
 	defer connMutex.Unlock()
-	activeConnections[conn] = true
+
+	if _, exists := activeSessions[sessionId]; !exists {
+		activeSessions[sessionId] = make(map[*websocket.Conn]bool)
+	}
+	activeSessions[sessionId][conn] = true
 }
 
 // WebSocket接続を解除
-func removeConnection(conn *websocket.Conn) {
+func removeConnection(sessionId string, conn *websocket.Conn) {
 	connMutex.Lock()
 	defer connMutex.Unlock()
-	delete(activeConnections, conn)
+
+	if connections, exists := activeSessions[sessionId]; exists {
+		delete(connections, conn)
+		if len(connections) == 0 {
+			delete(activeSessions, sessionId)
+		}
+	}
 }
 
 // WebSocketのハンドラー関数
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	sessionId := r.URL.Query().Get("sessionId") // クエリパラメータから取得
+	if sessionId == "" {
+		http.Error(w, "Missing sessionId", http.StatusBadRequest)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("Failed to set WebSocket upgrade:", err)
+		log.Println("Failed to upgrade:", err)
 		return
 	}
 	defer conn.Close()
 
-	addConnection(conn)
-	defer removeConnection(conn)
+	addConnection(sessionId, conn)
+	defer removeConnection(sessionId, conn)
 
-	// 初回のメッセージを送信
-	err = conn.WriteMessage(websocket.TextMessage, []byte("Server: Hello, Client!"))
-	if err != nil {
-		log.Println("Failed to send initial message:", err)
-		return
-	}
-
-	// クライアントからのメッセージを待機
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("Error receiving message:", err)
 			break
 		}
-		fmt.Printf("Received message from client: %s\n", msg)
+		fmt.Printf("Received message from client [%s]: %s\n", sessionId, msg)
 	}
 }
 
 // リアクション更新をクライアントに通知する関数
-func NotifyReactionUpdate(wordID string, newCount int) {
+func NotifySession(sessionId string, message string) {
 	connMutex.Lock()
 	defer connMutex.Unlock()
 
-	message := fmt.Sprintf(`{"wordID": "%s", "count": %d}`, wordID, newCount)
-
-	for conn := range activeConnections {
-		err := conn.WriteMessage(websocket.TextMessage, []byte(message))
-		if err != nil {
-			log.Printf("Error sending message to client: %v\n", err)
-			conn.Close()
-			delete(activeConnections, conn) // エラーが発生した接続を削除
+	if connections, exists := activeSessions[sessionId]; exists {
+		for conn := range connections {
+			err := conn.WriteMessage(websocket.TextMessage, []byte(message))
+			if err != nil {
+				log.Printf("Error sending message to client: %v\n", err)
+				conn.Close()
+				delete(connections, conn)
+			}
 		}
 	}
 }
 
-// 投稿次にwsで通知する
-func NotifyPost(word string) {
-	fmt.Println("NotifyPost")
-	connMutex.Lock()
-	defer connMutex.Unlock()
+// コメント投稿時に通知
+func NotifyPost(sessionId string, word string) {
+	fmt.Println("NotifyPost to session:", sessionId)
 
-	message := fmt.Sprint(word)
-
-	for conn := range activeConnections {
-		err := conn.WriteMessage(websocket.TextMessage, []byte(message))
-		if err != nil {
-			log.Printf("Error sending message to client: %v\n", err)
-			conn.Close()
-			delete(activeConnections, conn) // エラーが発生した接続を削除
-		}
-	}
+	message := fmt.Sprintf(`{"word": "%s", "timestamp": "%s"}`, word, time.Now().Format(time.RFC3339))
+	NotifySession(sessionId, message)
 }
