@@ -52,7 +52,7 @@ func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "コメントを入力してください", http.StatusBadRequest)
 		return
 	}
-	if utf8.RuneCountInString(data.Comment) > 20 { // ✅ 文字数をカウント
+	if utf8.RuneCountInString(data.Comment) > 20 {
 		http.Error(w, "コメントは20字以内で入力してください", http.StatusBadRequest)
 		return
 	}
@@ -69,13 +69,10 @@ func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// ログ出力（デバッグ用）
-	fmt.Printf("セッションID: %s, コメント: %s\n", comment.SessionId, comment.Comment)
-
 	// 成功レスポンスを返す
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	NotifyPost(comment.Comment)
+	NotifyPost(data.SessionId, comment.Comment)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "コメントを受け付けました",
@@ -312,7 +309,7 @@ var chatPageHTML = `
 					function connectWebSocket() {
 						// 現在のURLからWebSocketのURLを生成（httpをwsに変換）
 						const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-						const wsUrl = ` + "`${protocol}//${window.location.host}/app/ws`" + `;
+						const wsUrl = ` + "`${protocol}//${window.location.host}/app/ws?sessionId={{.SessionID}}`" + `;
 						
 						socket = new WebSocket(wsUrl);
 						
@@ -349,49 +346,64 @@ var chatPageHTML = `
 					connectWebSocket();
 					console.log('コメント送信処理前');
 					// コメント送信処理
-					commentForm.addEventListener('submit', async function(e) {
+					// エスケープ処理を追加
+					function escapeHTML(str) {
+						return str
+							.replace(/&/g, "&amp;")
+							.replace(/</g, "&lt;")
+							.replace(/>/g, "&gt;")
+							.replace(/"/g, "&quot;")
+							.replace(/'/g, "&#039;");
+					}
+
+					commentForm.addEventListener('submit', async function (e) {
 						console.log('コメント送信処理');
 						e.preventDefault();
+						
 						const name = nameInput.value.trim();
-        		const comment = commentInput.value.trim();  
+						let comment = commentInput.value.trim();
 
+						// コメントが空の場合
 						if (!comment) {
 							showStatusMessage('コメントを入力してください', 'error');
 							return;
 						}
 
+						// ニックネームが10文字以上の場合
 						if (name.length > 10) {
-							statusMessage.textContent = "ニックネームは10字以内で入力してください";
-							statusMessage.className = "status-message status-visible status-error";
+							showStatusMessage("ニックネームは10字以内で入力してください", "error");
 							return;
 						}
 
-						switch (comment.length) {
-							case 0:
-								statusMessage.textContent = "コメントを入力してください";
-								statusMessage.className = "status-message status-visible status-error";
-								return;
-							case 1:
-								statusMessage.textContent = "コメントが短すぎます";
-								statusMessage.className = "status-message status-visible status-error";
-								return;
-							case comment.length > 20:
-								statusMessage.textContent = "コメントは20字以内で入力してください";
-								statusMessage.className = "status-message status-visible status-error";
-								return;
+						// JavaScript の実行を防ぐためにエスケープ処理
+						comment = escapeHTML(comment);
+
+						if (/<script|<\/script>/i.test(comment)) {
+							showStatusMessage("不正な文字が含まれています", "error");
+							return;
 						}
-						
+
+						// コメントの長さチェック (修正)
+						if (comment.length < 2) {
+							showStatusMessage("コメントが短すぎます", "error");
+							return;
+						}
+						if (comment.length > 20) {
+							showStatusMessage("コメントは20字以内で入力してください", "error");
+							return;
+						}
+
 						try {
 							const response = await fetch('/app/comment', {
 								method: 'POST',
 								headers: {
 									'Content-Type': 'application/json',
 								},
-								body: JSON.stringify({ name, comment, sessionId : ` + "`${sessionId}`" + ` }),
+								body: JSON.stringify({ name, comment, sessionId }),
 							});
-							
+
 							const data = await response.json();
-							
+
 							if (data.success) {
 								showStatusMessage('コメントを送信しました', 'success');
 								commentInput.value = '';
