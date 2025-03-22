@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/gorilla/mux"
 	"github.com/noonyuu/websocket-server/db"
@@ -18,34 +19,46 @@ type CommentHandler struct {
 	DB *db.Database
 }
 
-func NewCommentHandler(database *db.Database) *CommentHandler {
+func NewCommentHandler(database *db.Database) *mux.Router {
 	handler := &CommentHandler{DB: database}
-	return handler
+	router := mux.NewRouter()
+	router.HandleFunc("/comment", handler.commentHandler).Methods("POST")
+	router.HandleFunc("/comment/get/{sessionId}", handler.commentListHandler).Methods("GET")
+	router.HandleFunc("/comment/form/{sessionId}", commentFormHandler).Methods("GET")
+
+	return router
 }
 
 func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) {
 	var data struct {
+		Name      string `json:"name"`
 		Comment   string `json:"comment"`
 		SessionId string `json:"sessionId"`
 	}
-
 	// リクエストボディのデコード
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		http.Error(w, "リクエストの解析エラー", http.StatusBadRequest)
 		return
 	}
-
+	// ニックネームのバリデーション
+	if len(data.Name) > 10 {
+		http.Error(w, "ニックネームは10字以内で入力してください", http.StatusBadRequest)
+		return
+	} else if data.Name == "" {
+		data.Name = "匿名"
+	}
 	// コメントのバリデーション
 	if data.Comment == "" {
 		http.Error(w, "コメントを入力してください", http.StatusBadRequest)
 		return
 	}
-	if len(data.Comment) > 20 {
+	if utf8.RuneCountInString(data.Comment) > 20 { // ✅ 文字数をカウント
 		http.Error(w, "コメントは20字以内で入力してください", http.StatusBadRequest)
 		return
 	}
 
 	comment := db.Comment{
+		Name:      data.Name,
 		Comment:   data.Comment,
 		SessionId: data.SessionId,
 	}
@@ -67,6 +80,17 @@ func (h *CommentHandler) commentHandler(w http.ResponseWriter, r *http.Request) 
 		"success": true,
 		"message": "コメントを受け付けました",
 	})
+}
+
+func (h *CommentHandler) commentListHandler(w http.ResponseWriter, r *http.Request) {
+	sessionID := mux.Vars(r)["sessionId"]
+	comments, err := h.DB.GetComments(sessionID)
+	if err != nil {
+		http.Error(w, "コメントの取得に失敗しました", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(comments)
 }
 
 func commentFormHandler(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +177,21 @@ var chatPageHTML = `
 						flex-direction: column;
 						gap: 16px;
 					}
+
+					.name-input {
+						width: 100%;
+						padding: 16px;
+						border: 1px solid var(--border-color);
+						border-radius: 8px;
+						font-size: 16px;
+						transition: border-color 0.3s, box-shadow 0.3s;
+					}
+
+					.name-input:focus {
+						outline: none;
+						border-color: var(--primary-color);
+						box-shadow: 0 0 0 2px rgba(67, 97, 238, 0.2);
+					}
 					
 					.comment-input {
 						width: 100%;
@@ -225,8 +264,10 @@ var chatPageHTML = `
 					<div class="comment-title">コメントを入力してください</div>
 					<div class="connection-status" id="connectionStatus">接続中...</div>
 					<form class="comment-form" id="commentForm">
+						<input class="name-input" placeholder="ニックネーム (任意)" id="nameInput" />
+						<div class="char-counter" id="nameCharCounter">0 / 10</div>
 						<textarea class="comment-input" placeholder="コメントを入力..." id="commentInput"></textarea>
-						<div class="char-counter" id="charCounter">0 / 20</div>
+						<div class="char-counter" id="commentCharCounter">0 / 20</div>
 						<button type="submit" class="submit-button" id="submitButton">送信</button>
 					</form>
 					<div class="status-message" id="statusMessage"></div>
@@ -235,23 +276,35 @@ var chatPageHTML = `
 				<script>
 					// WebSocket接続
 					let socket;
-					const statusMessage = document.getElementById('statusMessage');
-					const connectionStatus = document.getElementById('connectionStatus');
-					const commentForm = document.getElementById('commentForm');
-					const commentInput = document.getElementById('commentInput');
-					const submitButton = document.getElementById('submitButton');
-					const sessionId = '{{.SessionID}}';
+					const statusMessage = document.getElementById("statusMessage");
+					const connectionStatus = document.getElementById("connectionStatus");
+					const commentForm = document.getElementById("commentForm");
+					const nameInput = document.getElementById("nameInput");
+					const commentInput = document.getElementById("commentInput");
+					const submitButton = document.getElementById("submitButton");
+					const sessionId = "{{.SessionID}}";
 
 					// カウンター
-					const charCounter = document.getElementById("charCounter");
+					const nameCharCounter = document.getElementById("nameCharCounter");
+					const commentCharCounter = document.getElementById("commentCharCounter");
+
+					nameInput.addEventListener("input", () => {
+						const length = nameInput.value.length;
+						nameCharCounter.textContent = ` + "`${length} / 20`" + `;
+						if (length > 10) {
+							nameCharCounter.classList.add("error");
+						} else {
+							nameCharCounter.classList.remove("error");
+						}
+					});
 
 					commentInput.addEventListener("input", () => {
 						const length = commentInput.value.length;
-						charCounter.textContent = ` + "`${length} / 20`" + `;
+						commentCharCounter.textContent = ` + "`${length} / 20`" + `;
 						if (length > 20) {
-							charCounter.classList.add("error");
+							commentCharCounter.classList.add("error");
 						} else {
-							charCounter.classList.remove("error");
+							commentCharCounter.classList.remove("error");
 						}
 					});
 
@@ -299,17 +352,33 @@ var chatPageHTML = `
 					commentForm.addEventListener('submit', async function(e) {
 						console.log('コメント送信処理');
 						e.preventDefault();
-						const comment = commentInput.value.trim();      
+						const name = nameInput.value.trim();
+        		const comment = commentInput.value.trim();  
 
 						if (!comment) {
 							showStatusMessage('コメントを入力してください', 'error');
 							return;
 						}
 
-						if (comment.length > 20) {
-							statusMessage.textContent = "コメントは20字以内で入力してください";
+						if (name.length > 10) {
+							statusMessage.textContent = "ニックネームは10字以内で入力してください";
 							statusMessage.className = "status-message status-visible status-error";
 							return;
+						}
+
+						switch (comment.length) {
+							case 0:
+								statusMessage.textContent = "コメントを入力してください";
+								statusMessage.className = "status-message status-visible status-error";
+								return;
+							case 1:
+								statusMessage.textContent = "コメントが短すぎます";
+								statusMessage.className = "status-message status-visible status-error";
+								return;
+							case comment.length > 20:
+								statusMessage.textContent = "コメントは20字以内で入力してください";
+								statusMessage.className = "status-message status-visible status-error";
+								return;
 						}
 						
 						try {
@@ -318,7 +387,7 @@ var chatPageHTML = `
 								headers: {
 									'Content-Type': 'application/json',
 								},
-								body: JSON.stringify({ comment, sessionId : ` + "`${sessionId}`" + ` }),
+								body: JSON.stringify({ name, comment, sessionId : ` + "`${sessionId}`" + ` }),
 							});
 							
 							const data = await response.json();

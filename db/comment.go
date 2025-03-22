@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func (db *Database) InsertComment(comment *Comment) error {
@@ -13,20 +15,19 @@ func (db *Database) InsertComment(comment *Comment) error {
 }
 
 func (db *Database) GetComments(sessionID string) ([]Comment, error) {
-	collection := db.client.Database("comment").Collection("comments")
-	cursor, err := collection.Find(context.TODO(), map[string]string{"session_id": sessionID})
+	collection := db.client.Database("comments").Collection("comment")
+
+	// filter
+	filter := bson.D{{Key: "session_id", Value: sessionID}}
+	cursor, err := collection.Find(context.TODO(), filter)
 	if err != nil {
 		return nil, err
 	}
 	defer cursor.Close(context.TODO())
 
 	var comments []Comment
-	for cursor.Next(context.Background()) {
-		var comment Comment
-		if err := cursor.Decode(&comment); err != nil {
-			return nil, err
-		}
-		comments = append(comments, comment)
+	if err = cursor.All(context.TODO(), &comments); err != nil {
+		panic(err)
 	}
 	return comments, nil
 }
