@@ -11,6 +11,10 @@ import (
 func Server(database *db.Database) {
 	mainRouter := mux.NewRouter()
 
+	commentRouter := NewCommentHandler(database)
+	userRouter := NewUserHandler(database)
+	presentationRouter := NewPresentationHandler(database)
+
 	// 疎通確認用
 	mainRouter.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Received a request")
@@ -18,8 +22,10 @@ func Server(database *db.Database) {
 	})
 
 	mainRouter.HandleFunc("/ws", handleWebSocket)
-	mainRouter.HandleFunc("/comment-form/{sessionId}", commentFormHandler).Methods("GET")
-	mainRouter.HandleFunc("/comment", NewCommentHandler(database).commentHandler).Methods("POST")
+
+	mainRouter.PathPrefix("/comment").Handler(commentRouter)
+	mainRouter.PathPrefix("/user").Handler(userRouter)
+	mainRouter.PathPrefix("/presentation").Handler(presentationRouter)
 
 	go func() {
 		log.Println("Server is running on port 8080")
